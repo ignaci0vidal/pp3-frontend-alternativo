@@ -4,11 +4,11 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 // Run the actual frontend handlers. fetch is intercepted: no production writes.
-function harness({ token = 'test-token', storage, respond } = {}) {
+function harness({ token = 'test-token', storage, respond, cart = { items: [] }, cartRespond, productRespond } = {}) {
   const nodes = new Map();
   const node = (id) => {
     if (!nodes.has(id)) nodes.set(id, {
-      value: '', innerHTML: '', textContent: '', disabled: false,
+      value: id === '#direccion' ? 'Test address 123' : '', innerHTML: '', textContent: '', disabled: false,
       classList: { add() {}, remove() {}, toggle() {} },
       handlers: {}, addEventListener(event, fn) { this.handlers[event] = fn; },
     });
@@ -26,7 +26,16 @@ function harness({ token = 'test-token', storage, respond } = {}) {
     fetch: async (url, options) => {
       const call = { path: new URL(url).pathname, query: new URL(url).search, ...options };
       calls.push(call);
-      const data = await response(call);
+      let data;
+      if (call.path === '/api/usuarios/me/carrito') {
+        if (cartRespond) data = await cartRespond(call);
+        else {
+          if (call.method === 'PUT') cart.items = JSON.parse(call.body).carrito;
+          data = { success: true, carrito: cart.items };
+        }
+      } else if (/^\/api\/productos\/\d+$/.test(call.path)) {
+        data = productRespond ? await productRespond(call) : { id: Number(call.path.split('/').at(-1)), nombre: 'Test', precio: 12, stock: 2 };
+      } else data = await response(call);
       return { ok: (data.status || 200) < 400, status: data.status || 200, json: async () => data.body ?? data };
     },
   });
@@ -86,13 +95,18 @@ test('login and registration use Gateway payloads', async () => {
 });
 
 test('catalog items, filters, pagination and stock limits drive the cart', async () => {
-  const h = harness({ respond: () => ({ items: [{ id: 7, nombre: 'Test', precio: 12, stock: 2 }], pagination: { hasNextPage: true } }) });
+  const h = harness({ respond: call => call.path === '/api/usuarios/me' ? { user: { id: 'u1', name: 'Ana', role: 'client' } } : { items: [{ id: 7, nombre: 'Test', precio: 12, stock: 2 }], pagination: { hasNextPage: true } } });
   h.node('#search-input').value = 'Test'; h.node('#category-select').value = 'audio';
+  await h.run('restoreSession()');
   await h.run('loadProducts()');
-  assert.match(h.calls[0].query, /categoria=audio/);
-  assert.match(h.calls[0].query, /nombre=Test/);
+  const catalog = h.calls.find(c => c.path === '/api/productos');
+  assert.match(catalog.query, /categoria=audio/);
+  assert.match(catalog.query, /nombre=Test/);
   assert.equal(h.node('#catalog-next').disabled, false);
-  h.run('addToCart(7); addToCart(7); addToCart(7); changeQty(7, 1)');
+  await h.run('addToCart(7)');
+  await h.run('addToCart(7)');
+  await h.run('addToCart(7)');
+  await h.run('changeQty(7, 1)');
   assert.equal(h.run('cartTotal()'), 24);
   h.respond(() => { throw Error('offline'); });
   await h.run('loadProducts()');
@@ -106,7 +120,7 @@ test('pending checkout survives F5, queries attempt and clears cart only on conf
   await h.submit('#checkout-form');
   const post = h.calls.find(c => c.method === 'POST');
   assert.equal(post.headers['Idempotency-Key'], 'test-attempt');
-  assert.deepEqual(JSON.parse(post.body), { items: [{ productId: 7, quantity: 2 }] });
+  assert.deepEqual(JSON.parse(post.body), { items: [{ productId: 7, quantity: 2 }], direccionEntrega: 'Test address 123', couponCode: null });
   assert.equal(h.run('state.cart.length'), 1);
   const reload = harness({ storage: h.saved, respond: call => call.path === '/api/usuarios/me' ? { user: { id: 'u1', name: 'Ana', role: 'client' } } : call.path.includes('/operaciones/') ? { id: 9, estado: 'confirmed' } : [] });
   await reload.run('restoreSession()');
@@ -149,4 +163,131 @@ test('lost checkout response preserves attempt; retry queries without another PO
   assert.equal(h.calls.filter(c => c.method === 'POST').length, 1);
   assert.equal(h.calls.at(-1).path, '/api/pedidos/operaciones/test-attempt');
   assert.equal(h.node('#checkout-form button[type=submit]').disabled, false);
+});
+
+test('API cart persists add/change/remove across F5; product data is fetched again', async () => {
+  const cart = { items: [] };
+  const h = harness({ cart });
+  await h.run('restoreSession()');
+  h.run('state.products = [{ id: 7, nombre: "Test", precio: 12, stock: 2 }]');
+  await h.run('addToCart(7)');
+  await h.run('changeQty(7, 1)');
+  assert.deepEqual(cart.items, [{ productId: '7', quantity: 2 }]);
+  const writes = h.calls.filter(c => c.method === 'PUT');
+  assert.equal(writes.length, 2);
+  assert.equal(writes[0].headers.Authorization, 'Bearer test-token');
+  assert.equal(writes[0].headers['x-service-token'], undefined);
+  const reload = harness({ cart, productRespond: () => ({ id: 7, nombre: 'Updated API name', precio: 18, stock: 9 }) });
+  await reload.run('restoreSession()');
+  assert.equal(reload.run('state.cart[0].qty'), 2);
+  assert.equal(reload.run('cartTotal()'), 36);
+  assert.equal(reload.run('state.cart[0].nombre'), 'Updated API name');
+  await reload.run('removeItem(7)');
+  assert.deepEqual(cart.items, []);
+  assert.equal(reload.run('state.cart.length'), 0);
+});
+
+test('guests cannot create a browser-only cart', async () => {
+  const h = harness({ token: null });
+  h.run('state.products = [{ id: 7, nombre: "Test", precio: 12, stock: 2 }]');
+  await h.run('addToCart(7)');
+  assert.equal(h.run('state.cart.length'), 0);
+  assert.equal(h.calls.length, 0);
+});
+
+test('failed cart GET never writes an empty replacement', async () => {
+  const h = harness({ cartRespond: () => ({ status: 503, body: { message: 'offline' } }) });
+  await h.run('restoreSession()');
+  assert.equal(h.run('state.cartReady'), false);
+  assert.equal(h.saved.get('techstore_token'), 'test-token');
+  h.run('state.products = [{ id: 7, nombre: "Test", precio: 12, stock: 2 }]');
+  await h.run('addToCart(7)');
+  assert.equal(h.calls.filter(c => c.method === 'PUT').length, 0);
+});
+
+test('lost PUT response is reconciled by GET before the next mutation', async () => {
+  let persisted = [{ productId: '7', quantity: 1 }];
+  let fail = true;
+  const h = harness({ cartRespond: call => {
+    if (call.method === 'PUT') {
+      persisted = JSON.parse(call.body).carrito;
+      if (fail) { fail = false; throw Error('response lost'); }
+    }
+    return { carrito: persisted };
+  } });
+  await h.run('restoreSession()');
+  await h.run('changeQty(7, 1)');
+  assert.equal(h.run('state.cartReady'), false);
+  assert.equal(h.run('state.cart[0].qty'), 1);
+  assert.equal(persisted[0].quantity, 2);
+  await h.run('changeQty(7, -1)');
+  assert.equal(persisted[0].quantity, 1);
+  assert.equal(h.run('state.cartReady'), true);
+  const sequence = h.calls.filter(c => c.path.endsWith('/carrito')).map(c => c.method || 'GET');
+  assert.deepEqual(sequence, ['GET', 'PUT', 'GET', 'PUT']);
+});
+
+test('deleted products stay removable and cannot be bought', async () => {
+  const cart = { items: [{ productId: '7', quantity: 1 }] };
+  const h = harness({ cart, productRespond: () => ({ status: 404, body: {} }) });
+  await h.run('restoreSession()');
+  assert.equal(h.run('state.cart[0].unavailable'), true);
+  await h.submit('#checkout-form');
+  assert.equal(h.calls.some(c => c.method === 'POST'), false);
+  await h.run('removeItem(7)');
+  assert.deepEqual(cart.items, []);
+});
+
+test('checkout sends address/coupon, uses authoritative totals and clears persisted cart', async () => {
+  const cart = { items: [{ productId: '7', quantity: 1 }] };
+  const order = { id: 9, estado: 'confirmed', total: 10, descuento: 2, direccionEntrega: 'New address 42', cuponCodigo: 'TEST' };
+  const h = harness({ cart, respond: call => call.path === '/api/usuarios/me' ? { user: { id: 'u1', name: 'Ana', role: 'client' } } : call.method === 'POST' ? { success: true, pedido: order } : call.path === '/api/pedidos/9' ? order : [order] });
+  await h.run('restoreSession()');
+  h.node('#direccion').value = ' New address 42 ';
+  h.node('#coupon-code').value = ' test ';
+  await h.submit('#checkout-form');
+  const call = h.calls.find(c => c.method === 'POST');
+  assert.deepEqual(JSON.parse(call.body), { items: [{ productId: '7', quantity: 1 }], direccionEntrega: 'New address 42', couponCode: 'TEST' });
+  assert.equal(call.headers['x-user-id'], undefined);
+  assert.equal(call.headers['x-user-role'], undefined);
+  assert.deepEqual(cart.items, []);
+  await h.run('loadOrderDetail(9)');
+  assert.match(h.node('#orders-list').innerHTML, /New address 42/);
+  assert.match(h.node('#orders-list').innerHTML, /TEST/);
+  assert.match(h.node('#orders-list').innerHTML, /\$10\.00/);
+  assert.match(h.node('#orders-list').innerHTML, /Descuento: \$2\.00/);
+});
+
+for (const cleanupStatus of [400, 503]) {
+test(`cart cleanup ${cleanupStatus} after confirmation never creates a second order`, async () => {
+  let persisted = [{ productId: '7', quantity: 1 }];
+  let fail = true;
+  const h = harness({ cartRespond: call => {
+    if (call.method === 'PUT') {
+      if (fail) { fail = false; return { status: cleanupStatus, body: { message: 'cleanup failed' } }; }
+      persisted = JSON.parse(call.body).carrito;
+    }
+    return { carrito: persisted };
+  }, respond: call => call.path === '/api/usuarios/me' ? { user: { id: 'u1', name: 'Ana', role: 'client' } } : call.path === '/api/pedidos' && call.method !== 'POST' ? [] : { id: 9, estado: 'confirmed' } });
+  await h.run('restoreSession()');
+  await h.submit('#checkout-form');
+  assert.equal(h.saved.get('techstore_attempt_u1'), 'test-attempt');
+  assert.equal(h.run('state.cartReady'), false);
+  await h.submit('#checkout-form');
+  assert.equal(h.calls.filter(c => c.method === 'POST').length, 1);
+  assert.deepEqual(persisted, []);
+  assert.equal(h.saved.has('techstore_attempt_u1'), false);
+});
+}
+
+test('late cart response after logout cannot restore another session data', async () => {
+  let release;
+  const h = harness({ cartRespond: () => new Promise(resolve => { release = resolve; }) });
+  const pending = h.run('restoreSession()');
+  await new Promise(resolve => setImmediate(resolve));
+  h.run('clearSession()');
+  release({ carrito: [{ productId: '7', quantity: 1 }] });
+  await pending;
+  assert.equal(h.run('state.user'), null);
+  assert.equal(h.run('state.cart.length'), 0);
 });

@@ -60,6 +60,7 @@
   <!-- ============ CARRITO ============ -->
   <section id="view-carrito" class="view">
     <h2>Carrito de Compras</h2>
+    <button type="button" id="cart-reload" class="btn-secondary">Recuperar carrito</button>
     <div id="cart-items" class="cart-items"></div>
     <div id="cart-footer" class="cart-footer hidden">
       <span>Total: <strong>$<span id="cart-total">0.00</span></strong></span>
@@ -72,8 +73,14 @@
     <h2>Checkout</h2>
     <form id="checkout-form" class="form">
       <p>Este paso crea el pedido. El pago se realiza por separado.</p>
+      <label>Dirección de entrega
+        <input type="text" id="direccion" maxlength="500" required autocomplete="street-address">
+      </label>
+      <label>Código de cupón (opcional)
+        <input type="text" id="coupon-code">
+      </label>
       <div class="checkout-summary">
-        <span>Total a pagar:</span>
+        <span>Subtotal estimado, antes de descuentos:</span>
         <strong>$<span id="checkout-total">0.00</span></strong>
       </div>
       <button type="submit" class="btn-primary btn-lg">Confirmar Pedido ✅</button>

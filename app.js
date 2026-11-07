@@ -11,6 +11,8 @@ let state = {
   token: localStorage.getItem(TOKEN_KEY) || null,
   user: null,
   cart: [],
+  cartReady: false,
+  cartBusy: false,
   products: [],
   destacados: [],
   cotizacion: null,
@@ -61,7 +63,7 @@ function showView(name) {
   if (el) el.classList.add("active");
 
   if (name === "catalogo") loadProducts();
-  if (name === "carrito") renderCart();
+  if (name === "carrito") loadCart();
   if (name === "checkout") updateCheckoutTotal();
   if (name === "pedidos") loadOrders();
   if (name === "perfil") loadProfile();
@@ -94,10 +96,14 @@ $("#login-form").addEventListener("submit", async (e) => {
     if (!data.token || !(data.user || data.usuario)) throw new Error("Respuesta de sesión inválida");
     state.token = data.token;
     state.user = normalizeUser(data.user || data.usuario);
+    state.cart = [];
+    state.cartReady = false;
+    state.checkoutAttempt = null;
 
     localStorage.setItem(TOKEN_KEY, data.token);
     closeModal("modal-login");
     updateAuthUI();
+    await restoreSession();
     showView("perfil");
   } catch (err) {
     toast(err.message, "error");
@@ -142,11 +148,18 @@ function clearSession() {
   state.user = null;
   state.orders = [];
   state.cart = [];
+  state.cartReady = false;
+  state.cartBusy = false;
+  state.checkoutBusy = false;
   state.checkoutAttempt = null;
+  $("#direccion").value = "";
+  $("#coupon-code").value = "";
   localStorage.removeItem(TOKEN_KEY);
   updateCartCount();
   updateAuthUI();
   renderProfile();
+  renderCart();
+  $("#orders-list").innerHTML = "";
 }
 
 async function restoreSession() {
@@ -157,6 +170,7 @@ async function restoreSession() {
     if (state.token !== token) return;
     state.user = normalizeUser(response.user);
     state.checkoutAttempt = localStorage.getItem(`techstore_attempt_${state.user.id}`) || null;
+    if (!state.cartReady) await loadCart();
   } catch (err) {
     // api clears only an unauthorized session. A transient failure is retryable.
     if (err.status !== 401) toast("No se pudo verificar la sesión. Reintentá desde Perfil.", "error");
@@ -330,18 +344,101 @@ $("#catalog-prev").addEventListener("click", () => loadProducts(state.page - 1))
 $("#catalog-next").addEventListener("click", () => loadProducts(state.page + 1));
 
 /* ---------- CARRITO ---------- */
-function addToCart(id) {
-  if (state.checkoutAttempt) return toast("Consultá el pedido pendiente antes de modificar el carrito", "info");
-  const prod = state.products.find((p) => String(p.id) === String(id)) || state.destacados.find((p) => String(p.id) === String(id));
-  if (!prod) return toast("Error: Producto no encontrado", "error");
+async function hydrateCart(response) {
+  if (!Array.isArray(response.carrito)) throw new Error("Respuesta de carrito inválida");
+  return Promise.all(response.carrito.map(async (item) => {
+    const id = String(item.productId);
+    const qty = Number(item.quantity);
+    if (!/^\d+$/.test(id) || !Number.isSafeInteger(qty) || qty <= 0) throw new Error("Artículo de carrito inválido");
+    try {
+      const p = await api(`/api/productos/${encodeURIComponent(id)}`);
+      const precio = Number(p.precio ?? p.price);
+      const stock = Number(p.stock);
+      if (!Number.isFinite(precio) || precio < 0 || !Number.isSafeInteger(stock) || stock < 0) throw new Error("Producto inválido");
+      return { ...p, id, nombre: p.nombre ?? p.name, precio, stock, qty };
+    } catch (err) {
+      if (err.status !== 404) throw err;
+      return { id, qty, nombre: `Producto ${id} no disponible`, precio: 0, stock: 0, unavailable: true };
+    }
+  }));
+}
 
-  const existing = state.cart.find((i) => String(i.id) === String(prod.id));
-  if ((existing?.qty || 0) >= Number(prod.stock)) return toast("No hay más stock disponible", "error");
-  if (existing) existing.qty++;
-  else state.cart.push({ ...prod, qty: 1 });
+async function loadCart() {
+  if (state.cartBusy || state.checkoutBusy) return false;
+  if (!state.token || !state.user) { renderCart(); return false; }
+  const token = state.token;
+  state.cartBusy = true;
+  try {
+    const cart = await hydrateCart(await api("/api/usuarios/me/carrito"));
+    if (state.token !== token) return false;
+    state.cart = cart;
+    state.cartReady = true;
+    return true;
+  } catch (err) {
+    if (state.token === token) {
+      state.cartReady = false;
+      toast("No se pudo recuperar el carrito. Reintentá desde Carrito.", "error");
+    }
+    return false;
+  } finally {
+    if (state.token === token) state.cartBusy = false;
+    updateCartCount();
+    renderCart();
+  }
+}
 
-  updateCartCount();
-  toast(`${prod.nombre} agregado 🛒`);
+async function saveCart(cart) {
+  const token = state.token;
+  try {
+    const response = await api("/api/usuarios/me/carrito", {
+      method: "PUT",
+      body: JSON.stringify({ carrito: cart.map(i => ({ productId: String(i.id), quantity: i.qty })) }),
+    });
+    const saved = await hydrateCart(response);
+    if (state.token !== token) return false;
+    state.cart = saved;
+    state.cartReady = true;
+    return true;
+  } catch (err) {
+    if (state.token === token) state.cartReady = false;
+    throw err;
+  }
+}
+
+async function mutateCart(change) {
+  if (state.checkoutAttempt || state.checkoutBusy) return toast("Consultá el pedido pendiente antes de modificar el carrito", "info");
+  if (state.cartBusy) return;
+  if (!state.token || !state.user) {
+    toast("Iniciá sesión para guardar tu carrito", "info");
+    $("#modal-login").classList.remove("hidden");
+    return;
+  }
+  if (!state.cartReady && !(await loadCart())) return;
+  if (state.cartBusy || state.checkoutAttempt) return;
+  const token = state.token;
+  state.cartBusy = true;
+  try {
+    const draft = state.cart.map(i => ({ ...i }));
+    if (change(draft) === false) return;
+    if (await saveCart(draft)) toast("Carrito guardado");
+  } catch (err) {
+    toast("No se pudo confirmar el guardado. Recuperá el carrito antes de continuar.", "error");
+  } finally {
+    if (state.token === token) state.cartBusy = false;
+    updateCartCount();
+    renderCart();
+  }
+}
+
+async function addToCart(id) {
+  return mutateCart((draft) => {
+    const prod = state.products.find(p => String(p.id) === String(id)) || state.destacados.find(p => String(p.id) === String(id));
+    if (!prod) { toast("Producto no encontrado", "error"); return false; }
+    const existing = draft.find(i => String(i.id) === String(id));
+    if ((existing?.qty || 0) >= Number(prod.stock)) { toast("No hay más stock disponible", "error"); return false; }
+    if (existing) existing.qty++;
+    else draft.push({ ...prod, qty: 1 });
+  });
 }
 window.addToCart = addToCart;
 
@@ -350,24 +447,24 @@ function updateCartCount() {
   $("#cart-count").textContent = total;
 }
 
-function changeQty(id, delta) {
-  if (state.checkoutAttempt) return toast("Consultá el pedido pendiente antes de modificar el carrito", "info");
-  const item = state.cart.find((i) => String(i.id) === String(id));
-  if (!item) return;
-  if (item.qty + delta > Number(item.stock)) return toast("No hay más stock disponible", "error");
-  item.qty += delta;
-  if (item.qty <= 0) state.cart = state.cart.filter((i) => String(i.id) !== String(id));
-  updateCartCount();
-  renderCart();
+async function changeQty(id, delta) {
+  return mutateCart(draft => {
+    const index = draft.findIndex(i => String(i.id) === String(id));
+    if (index < 0) return false;
+    const item = draft[index];
+    if (delta > 0 && item.qty + delta > item.stock) { toast("No hay más stock disponible", "error"); return false; }
+    item.qty += delta;
+    if (item.qty <= 0) draft.splice(index, 1);
+  });
 }
 window.changeQty = changeQty;
 
-function removeItem(id) {
-  if (state.checkoutAttempt) return toast("Consultá el pedido pendiente antes de modificar el carrito", "info");
-  state.cart = state.cart.filter((i) => String(i.id) !== String(id));
-  updateCartCount();
-  renderCart();
-  toast("Producto eliminado", "info");
+async function removeItem(id) {
+  return mutateCart(draft => {
+    const index = draft.findIndex(i => String(i.id) === String(id));
+    if (index < 0) return false;
+    draft.splice(index, 1);
+  });
 }
 window.removeItem = removeItem;
 
@@ -378,6 +475,11 @@ function cartTotal() {
 function renderCart() {
   const cont = $("#cart-items");
   const footer = $("#cart-footer");
+  if (!state.user || !state.cartReady) {
+    cont.innerHTML = `<p class="empty-msg">${!state.user ? "Iniciá sesión para recuperar tu carrito." : "Carrito sin verificar. Usá Recuperar carrito para reintentar."}</p>`;
+    footer.classList.add("hidden");
+    return;
+  }
 
   if (!state.cart.length) {
     cont.innerHTML = `<p class="empty-msg">Tu carrito está vacío</p>`;
@@ -389,8 +491,8 @@ function renderCart() {
     <div class="cart-item">
       <div class="thumb">${emojiFor(i)}</div>
       <div class="info">
-        <strong>${i.nombre}</strong>
-        <small>$${i.precio.toFixed(2)} c/u</small>
+        <strong>${escapeHtml(i.nombre)}</strong>
+        <small>${i.unavailable ? "No disponible" : `$${i.precio.toFixed(2)} c/u · Stock: ${i.stock}`}</small>
       </div>
       <div class="controls">
         <button class="qty-btn" onclick="changeQty('${i.id}', -1)">−</button>
@@ -407,6 +509,7 @@ function renderCart() {
 }
 
 $("#btn-cart").addEventListener("click", () => showView("carrito"));
+$("#cart-reload").addEventListener("click", loadCart);
 
 /* ---------- CHECKOUT ---------- */
 function setCheckoutAttempt(value) {
@@ -418,28 +521,42 @@ function setCheckoutAttempt(value) {
 
 function updateCheckoutTotal() {
   $("#checkout-total").textContent = cartTotal().toFixed(2);
+  if (!$("#direccion").value) $("#direccion").value = state.user?.direccion || "";
+  $("#direccion").disabled = !!state.checkoutAttempt;
+  $("#coupon-code").disabled = !!state.checkoutAttempt;
+  $("#direccion").required = !state.checkoutAttempt;
 }
 
 $("#checkout-form").addEventListener("submit", async (e) => {
   e.preventDefault();
 
-  if (state.checkoutBusy) return;
+  if (state.checkoutBusy || state.cartBusy) return;
   if (state.token && !state.user) await restoreSession();
-  if (state.checkoutBusy) return;
+  if (state.checkoutBusy || state.cartBusy) return;
   if (!state.token || !state.user) {
     toast("Iniciá sesión para comprar", "error");
     $("#modal-login").classList.remove("hidden");
     return;
   }
   if (!state.cart.length && !state.checkoutAttempt) return toast("Tu carrito está vacío", "error");
+  if (!state.checkoutAttempt && !state.cartReady && !(await loadCart())) return;
+  if (state.checkoutBusy || state.cartBusy || !state.user) return;
+  if (!state.checkoutAttempt && (!state.cart.length || state.cart.some(i => i.unavailable || i.qty > i.stock))) return toast("Revisá los productos y el stock del carrito", "error");
+  const direccionEntrega = $("#direccion").value.trim();
+  if (!state.checkoutAttempt && (!direccionEntrega || [...direccionEntrega].length > 500)) return toast("Ingresá una dirección de hasta 500 caracteres", "error");
 
   const body = {
     items: state.cart.map((i) => ({ productId: i.id, quantity: i.qty })),
+    direccionEntrega,
+    couponCode: $("#coupon-code").value.trim().toUpperCase() || null,
   };
 
   state.checkoutBusy = true;
+  const checkoutToken = state.token;
   const button = $("#checkout-form button[type=submit]");
   button.disabled = true;
+  let submitted = false;
+  let confirmed = false;
   try {
     let pedido;
     if (state.checkoutAttempt) {
@@ -447,14 +564,20 @@ $("#checkout-form").addEventListener("submit", async (e) => {
       pedido = await api(`/api/pedidos/operaciones/${encodeURIComponent(state.checkoutAttempt)}`);
     } else {
       setCheckoutAttempt(crypto.randomUUID());
+      submitted = true;
       pedido = await api("/api/pedidos", {
         method: "POST",
         headers: { "Idempotency-Key": state.checkoutAttempt },
         body: JSON.stringify(body),
       });
     }
+    if (state.token !== checkoutToken) return;
+    pedido = pedido.pedido || pedido;
     if (["confirmed", "paid"].includes(pedido.estado)) {
-      state.cart = [];
+      confirmed = true;
+      // Keep the confirmed attempt until the API has acknowledged cart cleanup.
+      // Retrying after a failed cleanup queries this order instead of creating another.
+      if (!(await saveCart([]))) return;
       setCheckoutAttempt(null);
       updateCartCount();
       toast(`Pedido #${pedido.id} confirmado`);
@@ -466,17 +589,19 @@ $("#checkout-form").addEventListener("submit", async (e) => {
       toast("Pedido pendiente. Volvé a confirmar para consultar su estado.", "info");
     }
   } catch (err) {
-    if (state.user && [400, 409, 422].includes(err.status)) setCheckoutAttempt(null);
+    if (state.token === checkoutToken && submitted && !confirmed && [400, 409, 422].includes(err.status)) setCheckoutAttempt(null);
     toast(err.message + (state.checkoutAttempt ? " Volvé a confirmar para consultar el intento, sin duplicarlo." : ""), "error");
   } finally {
-    state.checkoutBusy = false;
+    if (state.token === checkoutToken) state.checkoutBusy = false;
     button.disabled = false;
+    updateCheckoutTotal();
   }
 });
 
 /* ---------- PEDIDOS ---------- */
 async function loadOrders() {
   const cont = $("#orders-list");
+  const token = state.token;
   if (!state.token) {
     cont.innerHTML = `<p class="empty-msg">Iniciá sesión para ver tus pedidos.</p>`;
     return;
@@ -485,9 +610,11 @@ async function loadOrders() {
 
   try {
     const pedidos = await api("/api/pedidos");
+    if (state.token !== token) return;
     state.orders = Array.isArray(pedidos) ? pedidos : [];
     renderOrders(state.orders);
   } catch (err) {
+    if (state.token !== token) return;
     cont.innerHTML = `<p class="empty-msg">No se pudieron cargar los pedidos: ${err.message}</p>`;
   }
 }
@@ -516,13 +643,29 @@ function renderOrders(list) {
       </div>
       <div class="order-meta">
         <span>Total: <strong>$${Number(o.total).toFixed(2)}</strong></span>
+        <span>Dirección: ${escapeHtml(o.direccionEntrega ?? o.direccion_entrega ?? "Sin dirección registrada")}</span>
+        <span>Cupón: ${escapeHtml(o.couponCode ?? o.cuponCodigo ?? "Sin cupón")}</span>
+        <span>Descuento: $${Number(o.descuento || 0).toFixed(2)}</span>
         <span>${fecha}</span>
       </div>
       ${itemsHtml}
-      ${["confirmed", "paid"].includes(o.estado) ? `<button class="btn-cancelar" onclick="cancelOrder('${o.id}')">Cancelar pedido</button>` : ""}
+      <button class="btn-secondary" onclick="loadOrderDetail('${o.id}')">Ver detalle</button>
+      ${o.estado === "confirmed" ? `<button class="btn-cancelar" onclick="cancelOrder('${o.id}')">Cancelar pedido</button>` : ""}
     </div>`;
   }).join("");
 }
+
+async function loadOrderDetail(id) {
+  const token = state.token;
+  try {
+    const order = await api(`/api/pedidos/${encodeURIComponent(id)}`);
+    if (state.token !== token) return;
+    renderOrders([order]);
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+window.loadOrderDetail = loadOrderDetail;
 
 async function cancelOrder(id) {
   if (!confirm("¿Cancelar este pedido? El stock se restaura.")) return;
