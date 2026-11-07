@@ -51,6 +51,10 @@
       </select>
     </div>
     <div id="products-grid" class="products-grid"></div>
+    <div class="modal-actions">
+      <button type="button" id="catalog-prev" class="btn-secondary" disabled>Anterior</button>
+      <button type="button" id="catalog-next" class="btn-secondary" disabled>Siguiente</button>
+    </div>
   </section>
 
   <!-- ============ CARRITO ============ -->
@@ -67,16 +71,7 @@
   <section id="view-checkout" class="view">
     <h2>Checkout</h2>
     <form id="checkout-form" class="form">
-      <label>Dirección de entrega
-        <input type="text" id="direccion" required placeholder="Av. Siempre Viva 123, Buenos Aires">
-      </label>
-      <label>Método de pago (referencia)
-        <select id="metodo-pago">
-          <option value="tarjeta">Tarjeta de crédito</option>
-          <option value="transferencia">Transferencia</option>
-          <option value="efectivo">Efectivo</option>
-        </select>
-      </label>
+      <p>Este paso crea el pedido. El pago se realiza por separado.</p>
       <div class="checkout-summary">
         <span>Total a pagar:</span>
         <strong>$<span id="checkout-total">0.00</span></strong>
@@ -88,6 +83,7 @@
   <!-- ============ PEDIDOS ============ -->
   <section id="view-pedidos" class="view">
     <h2>Mis Pedidos</h2>
+    <button type="button" class="btn-secondary" onclick="showView('checkout')">Consultar intento de compra pendiente</button>
     <div id="orders-list" class="orders-list"></div>
   </section>
 
@@ -111,13 +107,13 @@
       </div>
       <div id="cliente-form-container" class="hidden">
         <hr class="divider">
-        <h4 class="form-title">Completá tu perfil de cliente</h4>
+        <h4 class="form-title">Completá o editá tu perfil</h4>
         <form id="cliente-form" class="form">
           <label>Nombre <input type="text" id="cl-nombre" required></label>
           <label>Apellido <input type="text" id="cl-apellido" required></label>
-          <label>DNI <input type="text" id="cl-dni" required></label>
-          <label>Teléfono <input type="text" id="cl-telefono"></label>
-          <label>Dirección <input type="text" id="cl-direccion"></label>
+          <label>DNI <input type="text" id="cl-dni" pattern="[0-9]{7,8}" title="7 u 8 dígitos sin puntos"></label>
+          <label>Teléfono <input type="text" id="cl-telefono" pattern="[0-9]*"></label>
+          <label>Dirección <input type="text" id="cl-direccion" maxlength="300"></label>
           <button type="submit" class="btn-primary">Guardar perfil</button>
         </form>
       </div>
@@ -204,7 +200,7 @@
 
     <div class="footer-bottom">
       <p>© <span id="footer-year"></span> TechStore · PP3 IFTS N°16 · Grupo 1</p>
-      <p class="footer-tech">Hecho con tecnología de vanguardia</p>
+      <p class="footer-tech">Frontend original de <a href="https://github.com/PabloHD2024/Ecommerce_Frontend_PP3">PabloHD2024</a> · Adaptación PP3</p>
     </div>
   </footer>
 

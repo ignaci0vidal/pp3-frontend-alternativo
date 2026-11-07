@@ -3,7 +3,7 @@
    Gateway: https://pp3-ecommerce-api-gateway.onrender.com
    ========================================================= */
 
-const API_BASE = "https://pp3-ecommerce-api-gateway.onrender.com"; 
+const API_BASE = "https://pp3-ecommerce-api-gateway.onrender.com";
 const TOKEN_KEY = "techstore_token";
 
 /* ---------- ESTADO ---------- */
@@ -15,8 +15,9 @@ let state = {
   destacados: [],
   cotizacion: null,
   orders: [],
-  perfilCliente: null,
-  usandoMocks: false,
+  checkoutBusy: false,
+  checkoutAttempt: null,
+  page: 1,
 };
 
 /* ---------- HELPERS ---------- */
@@ -33,6 +34,7 @@ function toast(msg, type = "success") {
 }
 
 async function api(path, options = {}) {
+  const requestToken = state.token;
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (state.token) headers["Authorization"] = `Bearer ${state.token}`;
   let res;
@@ -42,7 +44,13 @@ async function api(path, options = {}) {
     throw new Error("No se pudo conectar al servidor.");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || data.message || `Error ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(data.error || data.message || `Error ${res.status}`);
+    error.status = res.status;
+    error.data = data;
+    if (res.status === 401 && requestToken && state.token === requestToken && path !== "/api/sesiones") clearSession();
+    throw error;
+  }
   return data;
 }
 
@@ -76,16 +84,17 @@ $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const email = $("#login-email").value.trim();
   const password = $("#login-password").value;
-  
+
   try {
     const data = await api("/api/sesiones", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
-    
+
+    if (!data.token || !(data.user || data.usuario)) throw new Error("Respuesta de sesión inválida");
     state.token = data.token;
-    state.user = data.usuario || data.user || {}; 
-    
+    state.user = normalizeUser(data.user || data.usuario);
+
     localStorage.setItem(TOKEN_KEY, data.token);
     closeModal("modal-login");
     updateAuthUI();
@@ -101,12 +110,12 @@ $("#register-form").addEventListener("submit", async (e) => {
   const apellido = $("#reg-apellido") ? $("#reg-apellido").value.trim() : "";
   const email = $("#reg-email").value.trim();
   const password = $("#reg-password").value;
-  
+
   try {
-    // Enviamos nombre y apellido. Si el back no acepta apellido, lo ignorará.
+    // Registro público: nunca enviar role ni credenciales de servicio.
     await api("/api/usuarios", {
       method: "POST",
-      body: JSON.stringify({ nombre, apellido, email, password }),
+      body: JSON.stringify({ name: nombre, apellido, email, password }),
     });
     toast("Cuenta creada. Ahora iniciá sesión.");
     closeModal("modal-register");
@@ -118,17 +127,42 @@ $("#register-form").addEventListener("submit", async (e) => {
 });
 
 $("#btn-logout").addEventListener("click", () => {
-  state.token = null;
-  state.user = null;
-  state.perfilCliente = null;
-  state.orders = [];
-  state.cart = []; // Vaciamos el carrito para el próximo usuario
-  localStorage.removeItem(TOKEN_KEY);
-  updateCartCount();
-  updateAuthUI();
+  clearSession();
   toast("Sesión cerrada", "info");
   showView("home");
 });
+
+function normalizeUser(user) {
+  if (!user || typeof user !== "object") throw new Error("Respuesta de perfil inválida");
+  return { ...user, name: user.name ?? user.nombre ?? "", role: user.role ?? user.rol ?? "" };
+}
+
+function clearSession() {
+  state.token = null;
+  state.user = null;
+  state.orders = [];
+  state.cart = [];
+  state.checkoutAttempt = null;
+  localStorage.removeItem(TOKEN_KEY);
+  updateCartCount();
+  updateAuthUI();
+  renderProfile();
+}
+
+async function restoreSession() {
+  if (!state.token) return;
+  const token = state.token;
+  try {
+    const response = await api("/api/usuarios/me");
+    if (state.token !== token) return;
+    state.user = normalizeUser(response.user);
+    state.checkoutAttempt = localStorage.getItem(`techstore_attempt_${state.user.id}`) || null;
+  } catch (err) {
+    // api clears only an unauthorized session. A transient failure is retryable.
+    if (err.status !== 401) toast("No se pudo verificar la sesión. Reintentá desde Perfil.", "error");
+  }
+  updateAuthUI();
+}
 
 function updateAuthUI() {
   const logged = !!state.token;
@@ -138,40 +172,39 @@ function updateAuthUI() {
 }
 
 /* ---------- PRODUCTOS ---------- */
-const MOCK_PRODUCTS = [
-  { id: 1, nombre: "Notebook Pro 14", descripcion: "Intel i7 · 16GB RAM", precio: 1299.99, stock: 8, categoria: "laptops" },
-  { id: 2, nombre: "Auriculares BT Pro", descripcion: "Cancelación de ruido", precio: 199.50, stock: 25, categoria: "audio" },
-];
-
 const EMOJIS = { laptops: "💻", audio: "🎧", accesorios: "🖱️", monitores: "🖥️", default: "📦" };
 function emojiFor(p) { return EMOJIS[p.categoria] || EMOJIS.default; }
 
-async function loadProducts() {
+async function loadProducts(page = 1) {
+  state.page = page;
   const grid = $("#products-grid");
   grid.innerHTML = `<p class="empty-msg">Cargando productos...</p>`;
-  
+
   const q = $("#search-input").value.trim();
   const cat = $("#category-select").value;
 
   const params = new URLSearchParams();
+  params.set("page", page);
   if (cat) params.append("categoria", cat);
   if (q) params.append("nombre", q);
 
   try {
     const data = await api(`/api/productos?${params.toString()}`);
     state.cotizacion = data.cotizacion || null;
-    state.products = (data.productos || []).map((p) => ({
+    $("#catalog-prev").disabled = !data.pagination?.hasPreviousPage;
+    $("#catalog-next").disabled = !data.pagination?.hasNextPage;
+    state.products = (data.items || data.productos || []).map((p) => ({
       ...p,
       precio: Number(p.precio),
       stock: Number(p.stock),
     }));
   } catch (err) {
-    console.warn("Usando mocks:", err.message);
-    let mocks = [...MOCK_PRODUCTS];
-    if (cat) mocks = mocks.filter(m => m.categoria === cat);
-    if (q) mocks = mocks.filter(m => m.nombre.toLowerCase().includes(q.toLowerCase()));
-    state.products = mocks;
-    state.cotizacion = null; 
+    $("#catalog-prev").disabled = true;
+    $("#catalog-next").disabled = true;
+    state.products = [];
+    state.cotizacion = null;
+    grid.innerHTML = `<p class="empty-msg">No se pudo cargar el catálogo. Reintentá en unos instantes.</p>`;
+    return;
   }
 
   const cot = $("#cotizacion-info");
@@ -212,13 +245,12 @@ async function loadDestacados() {
   let productos = [];
   try {
     const data = await api("/api/productos");
-    productos = (data.productos || []).slice(0, 4); 
+    productos = (data.items || data.productos || []).slice(0, 4);
     state.destacados = productos;
   } catch (err) {
-    if (typeof MOCK_PRODUCTS !== "undefined") {
-      productos = MOCK_PRODUCTS.slice(0, 4);
-      state.destacados = productos;
-    }
+    state.destacados = [];
+    grid.innerHTML = `<p class="empty-msg">No se pudieron cargar los destacados.</p>`;
+    return;
   }
 
   if (!productos.length) {
@@ -258,7 +290,7 @@ function renderProducts(list) {
     grid.innerHTML = `<p class="empty-msg">No se encontraron productos.</p>`;
     return;
   }
-  
+
   grid.innerHTML = list.map((p) => {
     const sinStock = p.stock <= 0;
     const stockClass = sinStock ? "out" : p.stock <= 5 ? "low" : "";
@@ -266,8 +298,8 @@ function renderProducts(list) {
     const usd = p.precioUSD ? `<span class="price-usd">≈ USD ${Number(p.precioUSD).toFixed(2)}</span>` : "";
 
     const imgSrc = p.image || p.imagen || p.foto;
-    const imgHtml = imgSrc 
-      ? `<img src="${imgSrc}" alt="${p.nombre}" style="width: 100%; height: 100%; object-fit: contain;">` 
+    const imgHtml = imgSrc
+      ? `<img src="${imgSrc}" alt="${p.nombre}" style="width: 100%; height: 100%; object-fit: contain;">`
       : "📦";
 
     return `
@@ -291,19 +323,23 @@ function renderProducts(list) {
 let searchTimeout;
 $("#search-input").addEventListener("input", () => {
   clearTimeout(searchTimeout);
-  searchTimeout = setTimeout(() => { loadProducts(); }, 400); 
+  searchTimeout = setTimeout(() => { loadProducts(); }, 400);
 });
 $("#category-select").addEventListener("change", () => { loadProducts(); });
+$("#catalog-prev").addEventListener("click", () => loadProducts(state.page - 1));
+$("#catalog-next").addEventListener("click", () => loadProducts(state.page + 1));
 
 /* ---------- CARRITO ---------- */
 function addToCart(id) {
+  if (state.checkoutAttempt) return toast("Consultá el pedido pendiente antes de modificar el carrito", "info");
   const prod = state.products.find((p) => String(p.id) === String(id)) || state.destacados.find((p) => String(p.id) === String(id));
   if (!prod) return toast("Error: Producto no encontrado", "error");
 
   const existing = state.cart.find((i) => String(i.id) === String(prod.id));
+  if ((existing?.qty || 0) >= Number(prod.stock)) return toast("No hay más stock disponible", "error");
   if (existing) existing.qty++;
   else state.cart.push({ ...prod, qty: 1 });
-  
+
   updateCartCount();
   toast(`${prod.nombre} agregado 🛒`);
 }
@@ -315,8 +351,10 @@ function updateCartCount() {
 }
 
 function changeQty(id, delta) {
+  if (state.checkoutAttempt) return toast("Consultá el pedido pendiente antes de modificar el carrito", "info");
   const item = state.cart.find((i) => String(i.id) === String(id));
   if (!item) return;
+  if (item.qty + delta > Number(item.stock)) return toast("No hay más stock disponible", "error");
   item.qty += delta;
   if (item.qty <= 0) state.cart = state.cart.filter((i) => String(i.id) !== String(id));
   updateCartCount();
@@ -325,6 +363,7 @@ function changeQty(id, delta) {
 window.changeQty = changeQty;
 
 function removeItem(id) {
+  if (state.checkoutAttempt) return toast("Consultá el pedido pendiente antes de modificar el carrito", "info");
   state.cart = state.cart.filter((i) => String(i.id) !== String(id));
   updateCartCount();
   renderCart();
@@ -370,41 +409,68 @@ function renderCart() {
 $("#btn-cart").addEventListener("click", () => showView("carrito"));
 
 /* ---------- CHECKOUT ---------- */
+function setCheckoutAttempt(value) {
+  state.checkoutAttempt = value;
+  const key = `techstore_attempt_${state.user.id}`;
+  if (value) localStorage.setItem(key, value);
+  else localStorage.removeItem(key);
+}
+
 function updateCheckoutTotal() {
   $("#checkout-total").textContent = cartTotal().toFixed(2);
 }
 
 $("#checkout-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  
-  // CORREGIDO: Antes decía || state.user (sin !)
+
+  if (state.checkoutBusy) return;
+  if (state.token && !state.user) await restoreSession();
+  if (state.checkoutBusy) return;
   if (!state.token || !state.user) {
     toast("Iniciá sesión para comprar", "error");
     $("#modal-login").classList.remove("hidden");
     return;
   }
-  if (!state.cart.length) return toast("Tu carrito está vacío", "error");
+  if (!state.cart.length && !state.checkoutAttempt) return toast("Tu carrito está vacío", "error");
 
-  const direccion = $("#direccion").value.trim();
-  if (!direccion) return toast("Ingresá una dirección", "error");
-
-  // Enviamos el ID tal cual viene (como string para UUIDs de PostgreSQL)
   const body = {
-    items: state.cart.map((i) => ({ productoId: i.id, cantidad: i.qty })),
-    direccionEntrega: direccion,
+    items: state.cart.map((i) => ({ productId: i.id, quantity: i.qty })),
   };
 
+  state.checkoutBusy = true;
+  const button = $("#checkout-form button[type=submit]");
+  button.disabled = true;
   try {
-    const pedido = await api("/api/pedidos", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    state.cart = [];
-    updateCartCount();
-    toast(`¡Pedido #${pedido.id || 'creado'} confirmado! 🎉`);
-    showView("pedidos");
+    let pedido;
+    if (state.checkoutAttempt) {
+      // Never create a second order after an ambiguous result.
+      pedido = await api(`/api/pedidos/operaciones/${encodeURIComponent(state.checkoutAttempt)}`);
+    } else {
+      setCheckoutAttempt(crypto.randomUUID());
+      pedido = await api("/api/pedidos", {
+        method: "POST",
+        headers: { "Idempotency-Key": state.checkoutAttempt },
+        body: JSON.stringify(body),
+      });
+    }
+    if (["confirmed", "paid"].includes(pedido.estado)) {
+      state.cart = [];
+      setCheckoutAttempt(null);
+      updateCartCount();
+      toast(`Pedido #${pedido.id} confirmado`);
+      showView("pedidos");
+    } else if (["rejected", "cancelled"].includes(pedido.estado)) {
+      setCheckoutAttempt(null);
+      toast("El pedido no fue confirmado. Revisá tu carrito.", "error");
+    } else {
+      toast("Pedido pendiente. Volvé a confirmar para consultar su estado.", "info");
+    }
   } catch (err) {
-    toast(err.message, "error");
+    if (state.user && [400, 409, 422].includes(err.status)) setCheckoutAttempt(null);
+    toast(err.message + (state.checkoutAttempt ? " Volvé a confirmar para consultar el intento, sin duplicarlo." : ""), "error");
+  } finally {
+    state.checkoutBusy = false;
+    button.disabled = false;
   }
 });
 
@@ -433,10 +499,10 @@ function renderOrders(list) {
     return;
   }
   cont.innerHTML = list.map((o) => {
-    const cancelado = (o.estado || "").toLowerCase() === "cancelado";
+    const cancelado = ["cancelado", "cancelled"].includes((o.estado || "").toLowerCase());
     const estado = (o.estado || "pendiente").toUpperCase();
-    const fecha = o.created_at ? new Date(o.created_at).toLocaleString("es-AR") : "—";
-    const items = Array.isArray(o.items) ? o.items : [];
+    const fecha = (o.fecha || o.created_at) ? new Date(o.fecha || o.created_at).toLocaleString("es-AR") : "—";
+    const items = Array.isArray(o.detalles) ? o.detalles : (Array.isArray(o.items) ? o.items : []);
     const itemsHtml = items.length
       ? `<ul class="items-list">${items.map((it) =>
           `<li>• ${it.nombre_producto || it.nombreProducto || "Producto"} × ${it.cantidad} — $${Number(it.precio_unitario ?? it.precioUnitario ?? 0).toFixed(2)}</li>`
@@ -450,11 +516,10 @@ function renderOrders(list) {
       </div>
       <div class="order-meta">
         <span>Total: <strong>$${Number(o.total).toFixed(2)}</strong></span>
-        <span>Dirección: ${o.direccion_entrega || "—"}</span>
         <span>${fecha}</span>
       </div>
       ${itemsHtml}
-      ${!cancelado ? `<button class="btn-cancelar" onclick="cancelOrder('${o.id}')">Cancelar pedido</button>` : ""}
+      ${["confirmed", "paid"].includes(o.estado) ? `<button class="btn-cancelar" onclick="cancelOrder('${o.id}')">Cancelar pedido</button>` : ""}
     </div>`;
   }).join("");
 }
@@ -462,7 +527,7 @@ function renderOrders(list) {
 async function cancelOrder(id) {
   if (!confirm("¿Cancelar este pedido? El stock se restaura.")) return;
   try {
-    await api(`/api/pedidos/${id}/cancelar`, { method: "PUT" });
+    await api(`/api/pedidos/${encodeURIComponent(id)}/cancelar`, { method: "PATCH" });
     toast("Pedido cancelado", "info");
     loadOrders();
   } catch (err) {
@@ -472,81 +537,42 @@ async function cancelOrder(id) {
 window.cancelOrder = cancelOrder;
 
 /* ---------- PERFIL ---------- */
-async function loadProfile() {
-  const container = $("#cliente-form-container");
-
-  if (state.user) {
-    $("#profile-nombre").textContent = state.user.nombre || "Usuario";
-    $("#profile-email").textContent = state.user.email || "—";
-    $("#profile-rol").textContent = state.user.rol || "—";
-  } else {
-    $("#profile-nombre").textContent = "Invitado";
-    $("#profile-email").textContent = "Sin sesión iniciada";
-    $("#profile-rol").textContent = "—";
-    $("#profile-dni").textContent = "—";
-    $("#profile-telefono").textContent = "—";
-    $("#profile-direcciones").innerHTML = "<li>—</li>";
-    container.classList.add("hidden");
-    return;
-  }
-
-  if (!state.token) return;
-
-  try {
-    const cliente = await api("/api/clientes/perfil");
-    state.perfilCliente = cliente || {};
-    
-    $("#profile-dni").textContent = cliente.dni || "—";
-    $("#profile-telefono").textContent = cliente.telefono || "—";
-    
-    const dirs = Array.isArray(cliente.direcciones) ? cliente.direcciones : [];
-    $("#profile-direcciones").innerHTML = dirs.length
-      ? dirs.map((d) => `<li>${d.calle || ""} ${d.numero || ""} — ${d.ciudad || ""} ${d.esPredeterminada ? "⭐" : ""}</li>`).join("")
-      : "<li>Sin direcciones cargadas</li>";
-      
-    container.classList.add("hidden");
-  } catch (err) {
-    state.perfilCliente = null;
-    $("#profile-dni").textContent = "—";
-    $("#profile-telefono").textContent = "—";
-    $("#profile-direcciones").innerHTML = "<li>Completá el formulario para crear tu perfil</li>";
-    container.classList.remove("hidden"); 
+function renderProfile() {
+  const user = state.user;
+  $("#profile-nombre").textContent = user?.name || "Invitado";
+  $("#profile-email").textContent = user?.email || (state.token ? "Sesión pendiente de verificar" : "Sin sesión iniciada");
+  $("#profile-rol").textContent = user?.role || "—";
+  $("#profile-dni").textContent = user?.dni || "—";
+  $("#profile-telefono").textContent = user?.telefono || "—";
+  $("#profile-direcciones").innerHTML = `<li>${escapeHtml(user?.direccion || "Sin dirección cargada")}</li>`;
+  $("#cliente-form-container").classList.toggle("hidden", !user);
+  for (const [id, field] of Object.entries({ nombre: "name", apellido: "apellido", dni: "dni", telefono: "telefono", direccion: "direccion" })) {
+    $(`#cl-${id}`).value = user?.[field] || "";
   }
 }
 
-/* ---------- CREAR PERFIL DE CLIENTE (Usa la ruta real /api/clientes) ---------- */
+async function loadProfile() {
+  if (state.token) await restoreSession();
+  renderProfile();
+}
+
 $("#cliente-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  
+  if (!state.token || !state.user) return toast("Iniciá sesión para editar tu perfil", "error");
   const body = {
-    nombre: $("#cl-nombre").value.trim(),
+    name: $("#cl-nombre").value.trim(),
     apellido: $("#cl-apellido").value.trim(),
-    dni: $("#cl-dni").value.trim(),
-    email: state.user?.email || "sin-email@test.com",
-    telefono: $("#cl-telefono").value.trim() || undefined,
-    direccion: $("#cl-direccion").value.trim(),
+    dni: $("#cl-dni").value.trim() || null,
+    telefono: $("#cl-telefono").value.trim() || null,
+    direccion: $("#cl-direccion").value.trim() || null,
   };
-
   try {
-    // Usamos el endpoint original del ms-clientes que sabemos que funciona
-    await api("/api/clientes", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    toast("Perfil creado con éxito ✅");
-    loadProfile();
+    const response = await api("/api/usuarios/me", { method: "PUT", body: JSON.stringify(body) });
+    state.user = normalizeUser(response.user);
+    renderProfile();
+    toast("Perfil actualizado");
   } catch (err) {
-    // Si el cliente ya existe, intentamos actualizarlo
-    try {
-      await api("/api/clientes/perfil", {
-        method: "PUT",
-        body: JSON.stringify(body),
-      });
-      toast("Perfil actualizado ✅");
-      loadProfile();
-    } catch (err2) {
-      toast(err2.message || err.message, "error");
-    }
+    toast(err.message, "error");
   }
 });
 
@@ -559,20 +585,9 @@ async function init() {
   const footerYear = document.getElementById("footer-year");
   if (footerYear) footerYear.textContent = new Date().getFullYear();
 
-  if (state.token) {
-    try {
-      const usuario = await api("/api/usuarios/me"); 
-      state.user = usuario;
-      updateAuthUI();
-    } catch (err) {
-      state.token = null;
-      state.user = null;
-      localStorage.removeItem(TOKEN_KEY);
-      updateAuthUI();
-    }
-  } else {
-    updateAuthUI();
-  }
+  updateAuthUI();
+  await restoreSession();
+  renderProfile();
 }
 
 init();
