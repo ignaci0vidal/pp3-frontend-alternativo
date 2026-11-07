@@ -77,13 +77,4 @@ Estos dobles se derivan de las fuentes locales y remotas anteriores: prueban los
 
 También se verifican sintaxis con `node --check app.js`, espacios con `git diff --check` y diff/listado de archivos antes de publicar. Pendiente: smoke test en navegador con servicios de prueba disponibles y verificación de GET/PUT autenticados contra el despliegue correcto.
 
-## Vercel: siguiente paso, sin deploy en esta tarea
 
-- Importar `ignaci0vidal/pp3-frontend-alternativo`; elegir la rama acordada para producción (`pp3/gateway-frontend` si se publica directamente esta rama).
-- Framework preset: Other. Root directory: raíz del repo. Sin instalación ni build. Output directory: `.`. No necesita variables de entorno, funciones ni rewrites; la navegación es interna a index.html.
-- Confirmar que `API_BASE` sea la URL HTTPS del Gateway que Lucía mantendrá. Las variables de Vercel no se interpolan en este JavaScript estático: un cambio de URL debe hacerse explícitamente en app.js.
-- Una vez asignado el dominio, coordinar con Lucía **el origen literal que muestre el navegador**, por ejemplo `https://<dominio-real-asignado>.vercel.app`, sin barra final, ruta ni wildcard. No podemos dar un dominio exacto antes de que Vercel lo asigne; no asumir que coincidirá con el nombre del repo.
-- Lucía debe configurar ese valor en `FRONTEND_ORIGIN` del Gateway y aplicar/reiniciar el servicio. El Gateway remoto consultado acepta un origen literal (la copia local acepta lista separada por comas): no enviar una lista sin adaptar su configuración CORS. Los previews tienen orígenes diferentes y requieren coordinar soporte para cada origen autorizado. Si se usa dominio propio, coordinar también su origen exacto.
-- Verificar preflight desde ese dominio con `Authorization`, `Content-Type`, `Idempotency-Key` y métodos GET/POST/PUT/PATCH; luego perfil y compra solo en entorno de prueba.
-
-No se creó proyecto ni deployment de Vercel.
