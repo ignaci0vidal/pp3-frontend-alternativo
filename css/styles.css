@@ -166,6 +166,7 @@ h2 { margin-bottom: 1.5rem; font-size: 1.5rem; }
 }
 .divider { margin: 1.5rem 0; border: none; border-top: 1px solid var(--border); }
 .form-title { margin-bottom: 1rem; }
+.profile-help { margin-bottom: 1rem; color: var(--secondary); line-height: 1.5; }
 
 /* PEDIDOS */
 .orders-list { display: flex; flex-direction: column; gap: 1rem; }
