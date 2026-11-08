@@ -159,6 +159,16 @@
     </div>
   </div>
 
+  <div id="modal-receipt" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="receipt-title">
+    <div class="modal-content">
+      <h3 id="receipt-title">Comprobante de pago</h3>
+      <pre id="receipt-content"></pre>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" onclick="closeModal('modal-receipt')">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ FOOTER ============ -->
   <footer class="footer">
     <div class="footer-container">
@@ -211,7 +221,7 @@
     </div>
   </footer>
 
-  <div id="toast" class="toast hidden"></div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script src="app.js"></script>
 </body>
 </html>

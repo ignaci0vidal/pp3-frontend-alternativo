@@ -21,7 +21,7 @@ function harness({ token = 'test-token', storage, respond, cart = { items: [] },
     document: { querySelector: node, querySelectorAll: () => [], getElementById: id => node('#' + id), createElement: () => ({}) },
     window: { scrollTo() {} }, localStorage: {
       getItem: k => saved.get(k) ?? null, setItem: (k, v) => saved.set(k, String(v)), removeItem: k => saved.delete(k),
-    }, URLSearchParams, crypto: { randomUUID: () => 'test-attempt' },
+    }, URL, URLSearchParams, AbortController, crypto: { randomUUID: () => 'test-attempt' },
     setTimeout: () => 0, clearTimeout() {}, console, confirm: () => true,
     fetch: async (url, options) => {
       const call = { path: new URL(url).pathname, query: new URL(url).search, ...options };
@@ -36,7 +36,10 @@ function harness({ token = 'test-token', storage, respond, cart = { items: [] },
       } else if (/^\/api\/productos\/\d+$/.test(call.path)) {
         data = productRespond ? await productRespond(call) : { id: Number(call.path.split('/').at(-1)), nombre: 'Test', precio: 12, stock: 2 };
       } else data = await response(call);
-      return { ok: (data.status || 200) < 400, status: data.status || 200, json: async () => data.body ?? data };
+      return { ok: (data.status || 200) < 400, status: data.status || 200, json: async () => {
+        if (data.jsonError) throw new SyntaxError('invalid JSON');
+        return data.body ?? data;
+      } };
     },
   });
   vm.runInContext(fs.readFileSync('app.js', 'utf8').replace(/init\(\);\s*$/, ''), context);
@@ -291,4 +294,229 @@ test('late cart response after logout cannot restore another session data', asyn
   await pending;
   assert.equal(h.run('state.user'), null);
   assert.equal(h.run('state.cart.length'), 0);
+});
+
+test('payment sends simulation contract and refreshes orders for approval and rejection', async () => {
+  for (const approved of [true, false]) {
+    const h = harness({ respond: call => call.method === 'POST' ? {
+      estadoPedido: approved ? 'Pagado' : 'Pendiente', comprobante: approved ? { numero: 'COMP-1' } : null,
+      mensaje: approved ? 'Pago aprobado' : 'Pago rechazado',
+    } : [] });
+    h.node('#payment-method-9').value = 'transferencia';
+    h.node('#payment-result-9').value = approved ? 'aprobado' : 'rechazado';
+    await h.run('payOrder(9)');
+    assert.equal(h.calls[0].path, '/api/pedidos/9/pagar');
+    assert.equal(h.calls[0].method, 'POST');
+    assert.equal(h.calls[0].headers.Authorization, 'Bearer test-token');
+    assert.deepEqual(JSON.parse(h.calls[0].body), { metodo: 'transferencia', resultadoSimulado: approved ? 'aprobado' : 'rechazado' });
+    assert.equal(h.calls[1].path, '/api/pedidos');
+    assert.equal(h.node('#toast').className, approved ? 'toast success' : 'toast error');
+    assert.equal(h.node('#payment-button-9').disabled, false);
+  }
+});
+
+test('payment prevents concurrent POSTs and reconciles a lost response without retrying', async () => {
+  let release;
+  const h = harness({ respond: call => call.method === 'POST' ? new Promise((resolve, reject) => { release = reject; }) : [] });
+  h.node('#payment-method-9').value = 'tarjeta';
+  h.node('#payment-result-9').value = 'aprobado';
+  const pending = h.run('payOrder(9)');
+  await h.run('payOrder(9)');
+  assert.equal(h.calls.length, 1);
+  release(Error('offline'));
+  await pending;
+  assert.equal(h.calls.filter(c => c.method === 'POST').length, 1);
+  assert.equal(h.calls[1].path, '/api/pedidos');
+  assert.match(h.node('#toast').textContent, /el estado del pedido/);
+  assert.equal(h.run('state.paymentBusy'), false);
+});
+
+test('receipt uses authenticated GET and renders untrusted values as plain text', async () => {
+  const h = harness({ respond: () => ({ numero: 'COMP-1', pedidoId: 9, cliente: '<img onerror=alert(1)>', total: 12, productos: [{ nombreProducto: '<script>', cantidad: 1, subtotal: 12 }] }) });
+  await h.run('loadOrderReceipt(9)');
+  assert.equal(h.calls[0].path, '/api/pedidos/9/comprobante');
+  assert.equal(h.calls[0].headers.Authorization, 'Bearer test-token');
+  assert.match(h.node('#receipt-content').textContent, /<script>/);
+  assert.equal(h.node('#receipt-content').innerHTML, '');
+  h.run('clearSession()');
+  assert.equal(h.node('#receipt-content').textContent, '');
+});
+
+test('receipt errors show service message and late responses cannot expose another session receipt', async () => {
+  const h = harness({ respond: () => ({ status: 404, body: { mensaje: 'Sin comprobante' } }) });
+  await h.run('loadOrderReceipt(9)');
+  assert.equal(h.node('#toast').textContent, 'Sin comprobante');
+  let resolve;
+  h.respond(() => new Promise(done => { resolve = done; }));
+  const pending = h.run('loadOrderReceipt(9)');
+  h.run('clearSession()');
+  resolve({ numero: 'PRIVATE', productos: [], total: 12 });
+  await pending;
+  assert.equal(h.node('#receipt-content').textContent, '');
+});
+
+test('order actions follow the payment lifecycle', () => {
+  const h = harness();
+  for (const estado of ['confirmed', 'paid', 'shipped', 'delivered', 'cancelled']) {
+    h.run(`renderOrders([{ id: 9, estado: '${estado}', total: 12 }])`);
+    const html = h.node('#orders-list').innerHTML;
+    assert.equal(html.includes('Pagar pedido'), estado === 'confirmed');
+    assert.equal(html.includes('Ver comprobante'), ['paid', 'shipped', 'delivered'].includes(estado));
+  }
+});
+
+test('catalog escapes HTML, image attributes and executable ID arguments', () => {
+  const h = harness();
+  const product = { id: "7');alert(1);//", nombre: '<img src=x onerror=alert(1)>', descripcion: '<script>alert(1)</script>', precio: 12, stock: 2, imagen: 'https://example.invalid/a" onerror="alert(1)' };
+  h.run(`renderProducts(${JSON.stringify([product])})`);
+  const html = h.node('#products-grid').innerHTML;
+  assert.ok(!html.includes('<script>'));
+  assert.ok(!html.includes('<img src=x'));
+  assert.ok(!html.includes(' onerror="'));
+  const encoded = html.match(/onclick="([^"]+)"/)[1];
+  const decoded = encoded.replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  let observed;
+  vm.runInNewContext(decoded, { addToCart: id => { observed = id; }, alert: () => assert.fail('injected JavaScript') });
+  assert.equal(observed, product.id);
+  assert.equal(h.run('safeImageUrl("javascript:alert(1)")'), '');
+  assert.match(h.run('safeImageUrl("img/test.png")'), /img\/test.png/);
+});
+
+test('featured cards escape images and disable products without stock', async () => {
+  const h = harness({ respond: () => ({ items: [{ id: 7, nombre: '<script>', precio: 12, stock: 0, imagen: 'x" onerror="alert(1)' }] }) });
+  await h.run('loadDestacados()');
+  const html = h.node('#destacados-grid').innerHTML;
+  assert.ok(!html.includes('<script>'));
+  assert.ok(!html.includes(' onerror="'));
+  assert.match(html, /disabled/);
+});
+
+test('order data and service error messages cannot inject HTML', async () => {
+  const h = harness({ respond: () => ({ status: 503, body: { message: '<img src=x onerror=alert(1)>' } }) });
+  h.run(`renderOrders(${JSON.stringify([{ id: 9, total: 12, estado: '<script>', detalles: [{ nombreProducto: '<script>', cantidad: '<img>' }] }])})`);
+  assert.ok(!h.node('#orders-list').innerHTML.includes('<script>'));
+  assert.ok(!h.node('#orders-list').innerHTML.includes('<img>'));
+  await h.run('loadOrders()');
+  assert.ok(!h.node('#orders-list').innerHTML.includes('<img '));
+});
+
+test('late profile save cannot restore personal data after logout', async () => {
+  const h = harness();
+  await h.run('restoreSession()');
+  let release;
+  h.respond(() => new Promise(resolve => { release = resolve; }));
+  const pending = h.submit('#cliente-form');
+  h.run('clearSession()');
+  release({ user: { id: 'u1', name: 'Private' } });
+  await pending;
+  assert.equal(h.run('state.user'), null);
+  assert.notEqual(h.node('#profile-nombre').textContent, 'Private');
+});
+
+test('the newest catalog request wins even if an older request finishes last', async () => {
+  let release;
+  const h = harness({ respond: () => new Promise(resolve => { release = resolve; }) });
+  const old = h.run('loadProducts()');
+  h.respond(() => ({ items: [{ id: 2, nombre: 'New', precio: 12, stock: 1 }] }));
+  await h.run('loadProducts(2)');
+  release({ items: [{ id: 1, nombre: 'Old', precio: 12, stock: 1 }] });
+  await old;
+  assert.equal(h.run('state.products[0].id'), 2);
+  assert.match(h.node('#products-grid').innerHTML, /New/);
+});
+
+test('order detail supersedes a pending order list', async () => {
+  let release;
+  const h = harness({ respond: () => new Promise(resolve => { release = resolve; }) });
+  const pending = h.run('loadOrders()');
+  h.respond(() => ({ id: 9, estado: 'paid', total: 12 }));
+  await h.run('loadOrderDetail(9)');
+  release([{ id: 1, estado: 'confirmed', total: 12 }]);
+  await pending;
+  assert.match(h.node('#orders-list').innerHTML, /Pedido #9/);
+  assert.ok(!h.node('#orders-list').innerHTML.includes('Pedido #1'));
+});
+
+test('uncertain checkout conflict retains its key and malformed success never duplicates checkout', async () => {
+  for (const response of [{ status: 409, body: { message: 'uncertain', uncertain: true } }, { jsonError: true }]) {
+    const h = harness({ cart: { items: [{ productId: '7', quantity: 1 }] } });
+    await h.run('restoreSession()');
+    h.respond(() => response);
+    await h.submit('#checkout-form');
+    assert.equal(h.saved.get('techstore_attempt_u1'), 'test-attempt');
+    await h.submit('#checkout-form');
+    assert.equal(h.calls.filter(c => c.method === 'POST').length, 1);
+    assert.equal(h.calls.at(-1).path, '/api/pedidos/operaciones/test-attempt');
+  }
+});
+
+test('receipt closed during loading cannot reopen on a late response', async () => {
+  let release;
+  const h = harness({ respond: () => new Promise(resolve => { release = resolve; }) });
+  const pending = h.run('loadOrderReceipt(9)');
+  h.run('closeModal("modal-receipt")');
+  release({ numero: 'PRIVATE', total: 12 });
+  await pending;
+  assert.equal(h.node('#receipt-content').textContent, '');
+});
+
+test('pending cancellation is not announced as complete and blocks competing writes', async () => {
+  let release;
+  const h = harness({ respond: () => new Promise(resolve => { release = resolve; }) });
+  const pending = h.run('cancelOrder(9)');
+  await h.run('cancelOrder(9)');
+  await h.run('payOrder(9)');
+  assert.equal(h.calls.length, 1);
+  h.respond(() => []);
+  release({ estado: 'cancelling' });
+  await pending;
+  assert.match(h.node('#toast').textContent, /Cancelación solicitada/);
+  assert.equal(h.run('state.cancellationBusy'), false);
+});
+
+test('invalid JSON on a 401 still clears the session', async () => {
+  const h = harness({ respond: () => ({ status: 401, jsonError: true }) });
+  await h.run('restoreSession()');
+  assert.equal(h.run('state.token'), null);
+});
+
+test('HTML has all static JS targets, unique IDs and exported inline handlers', () => {
+  const html = fs.readFileSync('index.html', 'utf8');
+  const js = fs.readFileSync('app.js', 'utf8');
+  const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
+  assert.equal(new Set(ids).size, ids.length);
+  for (const match of js.matchAll(/\$\("#([\w-]+)(?:[ "][^\n]*)?/g)) {
+    assert.ok(ids.includes(match[1]), `Missing DOM target ${match[1]}`);
+  }
+  for (const match of html.matchAll(/onclick="(\w+)\(/g)) {
+    assert.ok(js.includes(`window.${match[1]} =`), `Missing exported handler ${match[1]}`);
+  }
+});
+
+test('concurrent profile submissions send one PUT and release the form afterwards', async () => {
+  const h = harness();
+  await h.run('restoreSession()');
+  let release;
+  h.respond(() => new Promise(resolve => { release = resolve; }));
+  const pending = h.submit('#cliente-form');
+  await h.submit('#cliente-form');
+  assert.equal(h.calls.filter(c => c.method === 'PUT').length, 1);
+  assert.equal(h.node('#cliente-form button[type=submit]').disabled, true);
+  release({ user: { id: 'u1', name: 'Saved' } });
+  await pending;
+  assert.equal(h.node('#cliente-form button[type=submit]').disabled, false);
+});
+
+test('late payment from the previous session cannot refresh orders or unlock a new payment', async () => {
+  let release;
+  const h = harness({ respond: () => new Promise(resolve => { release = resolve; }) });
+  h.node('#payment-method-9').value = 'tarjeta';
+  h.node('#payment-result-9').value = 'aprobado';
+  const pending = h.run('payOrder(9)');
+  h.run('clearSession(); state.token = "another-session"; state.paymentBusy = true;');
+  release({ estadoPedido: 'Pagado', comprobante: { numero: 'COMP-1' } });
+  await pending;
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.run('state.paymentBusy'), true);
+  assert.equal(h.run('state.orders.length'), 0);
 });

@@ -1,5 +1,7 @@
 # Integración del frontend con Gateway
 
+Estado actualizado al 08/11/2026: ver [revisión integral y bloqueos actuales](revision-integral-2026-11-08.md). Esa revisión prevalece sobre los hallazgos históricos de este documento. Pago y comprobante ya están implementados en la UI; CORS, producto individual, recuperación de intentos y conectividad Gateway→Pedidos siguen pendientes de integración.
+
 Revisión: 2026-11-07. Todos los cambios están en este frontend.
 
 Estado inicial: rama `pp3/gateway-frontend`, árbol limpio, HEAD `5232dd7`.
@@ -38,6 +40,8 @@ No se leyeron archivos de entorno ni se usaron credenciales de los servicios.
 | Mis pedidos | GET `/api/pedidos` | Array con `fecha`, `detalles`, `total`, `estado` |
 | Detalle | GET `/api/pedidos/:id` | Pedido con `direccionEntrega` y cupón `cuponCodigo` (también admite `couponCode`) |
 | Cancelar | PATCH `/api/pedidos/:id`, `{estado:"cancelled"}` | Luego vuelve a consultar pedidos |
+| Pago simulado | POST `/api/pedidos/:id/pagar`, `{metodo:"tarjeta" o "transferencia",resultadoSimulado:"aprobado" o "rechazado"}` | `estadoPedido`, `pago`, `comprobante`; luego consulta pedidos |
+| Comprobante | GET `/api/pedidos/:id/comprobante` | JSON con número, cliente, productos, importes y método; disponible para paid/shipped/delivered |
 
 El Gateway local reenvía GET/PUT de usuarios/me y sesiones a usuarios sin quitar el envoltorio `user`. No expone un perfil en clientes. Usuarios permite los cinco campos del PUT; DNI opcional de 7 u 8 dígitos, teléfono solo dígitos y dirección hasta 300 caracteres. Valores opcionales vacíos se envían como null para borrarlos.
 
@@ -51,7 +55,7 @@ Tras confirmar un pedido se vacía el carrito mediante PUT, conservando el ident
 
 - La copia local antigua del Gateway descarta dirección. El Gateway remoto de Lucía sí reenvía `direccionEntrega` al crear; el frontend vuelve a incluir dirección y cupón según el contrato objetivo. El pago sigue siendo un paso separado.
 - Crear pedido requiere `Idempotency-Key`; la UI evita doble envío y conserva el identificador por usuario en localStorage, incluso tras F5 o fallo de red. Mientras está pendiente bloquea cambios del carrito. Desde Mis Pedidos se puede abrir checkout y confirmar para consultar el intento. Un 404 al consultarlo conserva la clave por precaución: requiere revisión del servicio antes de iniciar otra operación. No hay reintento automático de escrituras.
-- La UI crea y permite cancelar pedidos; no implementa pago ni comprobante. El pago es otro paso del contrato. Cancelación puede quedar pendiente de conciliación; consultar Mis Pedidos para el estado real.
+- La UI crea y permite cancelar pedidos. Desde Mis Pedidos permite pagar pedidos confirmed mediante simulación explícita y consultar el comprobante no fiscal de paid/shipped/delivered. Contrato de pago/comprobante contrastado con la copia local de `../EcommerceApp2/ms-pedidos/src/app.js` el 08/11/2026; falta verificar la integración desplegada. Cancelación puede quedar pendiente de conciliación; consultar Mis Pedidos para el estado real.
 - No se puede afirmar paridad con producción: las consultas GET a `https://pp3-ecommerce-api-gateway.onrender.com` de `/health`, `/api/usuarios/me` sin token, `/api/productos?limit=1` y `/api/categorias` agotaron 20 segundos aun con acceso de red ampliado. No se observó status HTTP. Esto no demuestra que falten rutas; impide verificar disponibilidad, CORS y versión desplegada. No se enviaron POST, PUT ni PATCH a producción.
 
 ### Bloqueos comprobados en los repositorios remotos

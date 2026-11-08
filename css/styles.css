@@ -22,6 +22,12 @@ body {
 }
 .hidden { display: none !important; }
 
+/* PAGOS Y COMPROBANTES */
+.order-payment { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin: 1rem 0; }
+.order-payment p { width: 100%; }
+.order-payment select { padding: .5rem; border: 1px solid var(--border); border-radius: 6px; }
+#receipt-content { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 1rem 0; max-height: 60vh; overflow-y: auto; }
+.btn-primary:disabled { opacity: .6; cursor: wait; }
 /* NAVBAR */
 .navbar {
   display: flex; align-items: center; justify-content: space-between;
@@ -201,7 +207,7 @@ h2 { margin-bottom: 1.5rem; font-size: 1.5rem; }
 }
 .modal-content {
   background: white; padding: 2rem; border-radius: var(--radius);
-  width: 90%; max-width: 400px; display: flex; flex-direction: column; gap: 1.25rem;
+  width: 90%; max-width: 400px; max-height: 90vh; overflow-y: auto; display: flex; flex-direction: column; gap: 1.25rem;
   box-shadow: var(--shadow-lg);
 }
 .modal-content .form { max-width: 100%; }

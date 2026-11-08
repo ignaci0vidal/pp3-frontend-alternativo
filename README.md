@@ -15,3 +15,5 @@ git diff --check
 ```
 
 Ver [contrato, evidencia y pendientes](docs/gateway-contract.md), incluida la configuración futura de Vercel y CORS.
+
+Última revisión: [08/11/2026 — correcciones, pruebas y bloqueos de integración](docs/revision-integral-2026-11-08.md).
