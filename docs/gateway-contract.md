@@ -37,7 +37,7 @@ No se leyeron archivos de entorno ni se usaron credenciales de los servicios.
 | Consultar intento | GET `/api/pedidos/operaciones/:attemptId` | Pedido o resultado pendiente |
 | Mis pedidos | GET `/api/pedidos` | Array con `fecha`, `detalles`, `total`, `estado` |
 | Detalle | GET `/api/pedidos/:id` | Pedido con `direccionEntrega` y cupón `cuponCodigo` (también admite `couponCode`) |
-| Cancelar | PATCH `/api/pedidos/:id/cancelar` | Luego vuelve a consultar pedidos |
+| Cancelar | PATCH `/api/pedidos/:id`, `{estado:"cancelled"}` | Luego vuelve a consultar pedidos |
 
 El Gateway local reenvía GET/PUT de usuarios/me y sesiones a usuarios sin quitar el envoltorio `user`. No expone un perfil en clientes. Usuarios permite los cinco campos del PUT; DNI opcional de 7 u 8 dígitos, teléfono solo dígitos y dirección hasta 300 caracteres. Valores opcionales vacíos se envían como null para borrarlos.
 
@@ -60,7 +60,7 @@ El frontend está preparado, pero la integración completa no se puede dar por c
 
 1. Gateway de Lucía no declara GET/PUT `/api/usuarios/me/carrito` ni GET `/api/productos/:id`. Debe reenviar carrito con Bearer a Usuarios y detalle de productos a Catálogo. Sin esto no puede recuperarse/guardarse un carrito con información actual. El frontend muestra un fallo y no simula persistencia.
 2. Tampoco declara GET `/api/pedidos/:id` ni GET `/api/pedidos/operaciones/:attemptId`. Sin ellos fallan detalle y recuperación segura de compras pendientes. El segundo requiere proxy autenticado hacia `/api/pedidos/internal/intentos/:attemptId` con identidad derivada del JWT y token interno solo en Gateway.
-3. Gateway cancela con PUT; el contrato objetivo y la copia local usan PATCH `/api/pedidos/:id/cancelar`. Hay que agregar el alias PATCH o acordar un único método antes del smoke test.
+3. Actualización del equipo del 08/11/2026: la ruta canónica de cancelación es PATCH `/api/pedidos/:id` con `{estado:"cancelled"}`. El frontend y su prueba usan ahora ese contrato; falta verificarlo contra el Gateway desplegado.
 4. Gateway pasa `couponCode` a Catálogo, pero no al POST inicial de Pedidos. Debe incluirlo también allí: de lo contrario la clave/hash inicial no contempla el cupón y un pendiente puede carecer de esa asociación. La confirmación escribe `inventory.couponCode`; no alcanza para garantizar la persistencia del cupón desde la creación y sus reintentos.
 5. Pedidos main declara `const direccionEntrega` dos veces dentro de POST (líneas 101 y 120 del archivo consultado). `node --check` sobre el contenido remoto, sin guardarlo ni modificarlo, falla con `SyntaxError: Identifier 'direccionEntrega' has already been declared`. El formateador también duplica la propiedad de dirección. Existe [migración 003](https://github.com/ignaciohernandez/pp3-api-pedidos/blob/4a898012bcd11d3ffe298b7e4447306dd2c65e6f/migrations/003-direccion-entrega.sql) para VARCHAR(500), INSERT y hash de dirección, pero no puede certificarse ejecutable esa versión hasta corregir la declaración y probarla. No se tocó el backend.
 6. En el código de Pedidos consultado, detalle/comprobante validan ID y rol, y los cambios de estado de cancelación/envío/entrega comprueban permisos antes de resolver reintentos. Se dejaron intactos. El frontend no manda `x-user-id`, `x-user-role`, importes autorizados de inventario ni token de servicio; eso corresponde al Gateway. No se ejecutaron pruebas de autorización contra un servicio real.

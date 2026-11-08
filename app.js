@@ -670,7 +670,10 @@ window.loadOrderDetail = loadOrderDetail;
 async function cancelOrder(id) {
   if (!confirm("¿Cancelar este pedido? El stock se restaura.")) return;
   try {
-    await api(`/api/pedidos/${encodeURIComponent(id)}/cancelar`, { method: "PATCH" });
+    await api(`/api/pedidos/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ estado: "cancelled" }),
+    });
     toast("Pedido cancelado", "info");
     loadOrders();
   } catch (err) {

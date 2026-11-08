@@ -136,7 +136,8 @@ test('orders render detalles/fecha and cancel through PATCH', async () => {
   assert.match(h.node('#orders-list').innerHTML, /Test/);
   await h.run('cancelOrder(9)');
   assert.equal(h.calls[0].method, 'PATCH');
-  assert.equal(h.calls[0].path, '/api/pedidos/9/cancelar');
+  assert.equal(h.calls[0].path, '/api/pedidos/9');
+  assert.deepEqual(JSON.parse(h.calls[0].body), { estado: 'cancelled' });
 });
 
 test('failed profile save preserves session and entered form values', async () => {

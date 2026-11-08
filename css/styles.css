@@ -25,7 +25,7 @@ body {
 /* NAVBAR */
 .navbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 1rem 2rem; background: var(--card);
+  padding: 1rem 2rem; background: #d1d5db;
   box-shadow: var(--shadow); position: sticky; top: 0; z-index: 100;
 }
 .nav-brand { font-weight: 800; font-size: 2rem; color: var(--primary); cursor: pointer; }
