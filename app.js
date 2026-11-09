@@ -630,6 +630,14 @@ $("#checkout-form").addEventListener("submit", async (e) => {
     }
   } catch (err) {
     if (state.token !== checkoutToken) return;
+    if (state.checkoutAttempt && err.status === 404) {
+      setCheckoutAttempt(null);
+      toast(
+        "El intento anterior ya no existe. Volvé a confirmar el pedido.",
+        "info"
+      );
+      return;
+    }
     if (submitted && !confirmed && !err.data?.uncertain && [400, 409, 422].includes(err.status)) setCheckoutAttempt(null);
     toast(err.message + (state.checkoutAttempt ? " Volvé a confirmar para consultar el intento, sin duplicarlo." : ""), "error");
   } finally {
