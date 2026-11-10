@@ -1,0 +1,81 @@
+@startuml
+
+title DS-02 - Consulta y actualización del perfil
+
+autonumber
+
+actor Cliente
+
+participant Frontend
+
+participant "API Gateway" as G
+
+participant "API Usuarios" as U
+
+database "MongoDB Atlas" as DB
+
+Cliente -> Frontend : Abre Mi Perfil
+
+Frontend -> G : GET /api/usuarios/me\nBearer JWT
+
+alt JWT ausente o inválido
+
+  G --> Frontend : 401 Unauthorized
+
+else JWT válido
+
+  G -> U : GET /api/usuarios/me\nBearer JWT
+
+  U -> DB : Buscar usuario por sub
+
+  alt Usuario no encontrado
+
+    U --> G : 404 Not Found
+
+    G --> Frontend : 404 Not Found
+
+  else Usuario encontrado
+
+    U --> G : 200 OK\n{user}
+
+    G --> Frontend : 200 OK\n{user}
+
+  end
+
+end
+
+Cliente -> Frontend : Edita datos permitidos
+
+Frontend -> G : PUT /api/usuarios/me\n{name, apellido, dni, telefono, direccion}
+
+G -> U : PUT /api/usuarios/me\nBearer JWT + JSON
+
+alt Campos inválidos/no permitidos
+
+  U --> G : 400 Bad Request
+
+  G --> Frontend : 400 Bad Request
+
+else Usuario no encontrado
+
+  U --> G : 404 Not Found
+
+  G --> Frontend : 404 Not Found
+
+else Actualización válida
+
+  U -> DB : Actualizar usuario
+
+  U --> G : 200 OK\n{user actualizado}
+
+  G --> Frontend : 200 OK
+
+else Error interno / servicio no disponible
+
+  U --> G : 500 Internal Server Error
+
+  G --> Frontend : 500 o 503
+
+end
+
+@enduml

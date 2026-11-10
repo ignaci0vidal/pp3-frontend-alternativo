@@ -1,0 +1,55 @@
+@startuml
+
+title DS-05 - Registro de usuario
+
+autonumber
+
+actor Visitante
+
+participant Frontend
+
+participant "API Gateway" as G
+
+participant "API Usuarios" as U
+
+database "MongoDB Atlas" as DB
+
+Visitante -> Frontend : Completa formulario
+
+Frontend -> G : POST /api/usuarios\n{name, apellido, email, password}
+
+G -> U : POST /api/usuarios
+
+alt Datos inválidos
+
+  U --> G : 400 Bad Request
+
+  G --> Frontend : 400 Bad Request
+
+else Email duplicado
+
+  U -> DB : Crear usuario / índice único
+
+  U --> G : 409 Conflict
+
+  G --> Frontend : 409 Conflict
+
+else Registro válido
+
+  U -> U : bcrypt hash + role client
+
+  U -> DB : Crear usuario
+
+  U --> G : 201 Created\n{success,user}
+
+  G --> Frontend : 201 Created
+
+else Error interno / servicio no disponible
+
+  U --> G : 500 Internal Server Error
+
+  G --> Frontend : 500 o 503
+
+end
+
+@enduml

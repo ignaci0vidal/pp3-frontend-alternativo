@@ -1,0 +1,55 @@
+@startuml
+
+title DS-11 - Consulta de comprobante
+
+autonumber
+
+actor Cliente
+
+participant Frontend
+
+participant "API Gateway" as G
+
+participant "API Pedidos" as P
+
+database "MySQL (Aiven)" as DB
+
+Cliente -> Frontend : Solicita comprobante
+
+Frontend -> G : GET /api/pedidos/:id/comprobante\nBearer JWT
+
+alt JWT inválido
+
+  G --> Frontend : 401 Unauthorized
+
+else JWT válido
+
+  G -> P : GET /api/pedidos/:id/comprobante\nx-service-token + identidad
+
+  P -> DB : Consultar pedido + receipt
+
+  alt Comprobante disponible
+
+    P --> G : 200 OK\n{comprobante}
+
+    G --> Frontend : 200 OK
+
+  else Pedido/comprobante inexistente o no pagado
+
+    P --> G : 404 Not Found
+
+    G --> Frontend : 404 Not Found
+
+  else Error interno
+
+    P --> G : 500 Internal Server Error
+
+  else Pedidos no disponible
+
+    G --> Frontend : 503 Service Unavailable
+
+  end
+
+end
+
+@enduml

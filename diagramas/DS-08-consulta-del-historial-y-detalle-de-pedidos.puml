@@ -1,0 +1,75 @@
+@startuml
+
+title DS-08 - Historial y detalle de pedidos
+
+autonumber
+
+actor Cliente
+
+participant Frontend
+
+participant "API Gateway" as G
+
+participant "API Pedidos" as P
+
+database "MySQL (Aiven)" as DB
+
+Cliente -> Frontend : Abre Mis pedidos
+
+Frontend -> G : GET /api/pedidos\nBearer JWT
+
+alt JWT inválido
+
+  G --> Frontend : 401 Unauthorized
+
+else JWT válido
+
+  G -> P : GET /api/pedidos\nx-service-token + x-user-id + x-user-role
+
+  alt Identidad interna inválida
+
+    P --> G : 401 Unauthorized
+
+  else Consulta correcta
+
+    P -> DB : SELECT pedidos del usuario
+
+    P --> G : 200 OK\n[pedidos]
+
+    G --> Frontend : 200 OK
+
+  else Error interno
+
+    P --> G : 500 Internal Server Error
+
+  else Pedidos no disponible
+
+    G --> Frontend : 503 Service Unavailable
+
+  end
+
+end
+
+opt Cliente selecciona pedido
+
+  Frontend -> G : GET /api/pedidos/:id
+
+  G -> P : GET /api/pedidos/:id + identidad
+
+  alt Encontrado y autorizado
+
+    P --> G : 200 OK\n{pedido,detalles}
+
+    G --> Frontend : 200 OK
+
+  else Inexistente o ajeno
+
+    P --> G : 404 Not Found
+
+    G --> Frontend : 404 Not Found
+
+  end
+
+end
+
+@enduml

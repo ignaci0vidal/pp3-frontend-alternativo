@@ -1,0 +1,69 @@
+@startuml
+
+title DS-09 - Recuperación de intento de compra
+
+autonumber
+
+actor Cliente
+
+participant Frontend
+
+participant "API Gateway" as G
+
+participant "API Pedidos" as P
+
+database "MySQL (Aiven)" as DB
+
+note over Frontend
+
+El frontend conserva attemptId cuando
+
+el resultado del POST fue incierto.
+
+end note
+
+Cliente -> Frontend : Vuelve a confirmar/consultar
+
+Frontend -> G : GET /api/pedidos/operaciones/:attemptId\nBearer JWT
+
+alt JWT inválido
+
+  G --> Frontend : 401 Unauthorized
+
+else JWT válido
+
+  G -> P : GET /api/pedidos/internal/intentos/:attemptId\nx-service-token + x-user-id
+
+  P -> DB : Buscar user_id + attempt_id
+
+  alt Intento encontrado
+
+    P --> G : 200 OK\n{pedido}
+
+    G --> Frontend : 200 OK
+
+  else Intento inexistente
+
+    P --> G : 404 Not Found\n"No se encontró el intento"
+
+    G --> Frontend : 404 Not Found
+
+  else Identidad/intento inválidos
+
+    P --> G : 400 Bad Request
+
+    G --> Frontend : 400 Bad Request
+
+  else Error interno
+
+    P --> G : 500 Internal Server Error
+
+  else Pedidos no disponible
+
+    G --> Frontend : 503 Service Unavailable
+
+  end
+
+end
+
+@enduml

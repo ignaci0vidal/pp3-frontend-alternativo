@@ -1,0 +1,85 @@
+@startuml
+
+title DS-04 - Confirmación o rechazo de compra
+
+autonumber
+
+participant "API Gateway" as G
+
+participant "API Catálogo" as C
+
+database PostgreSQL as DC
+
+participant "API Pedidos" as P
+
+database "MySQL (Aiven)" as DP
+
+participant Frontend as F
+
+G -> C : POST /api/movimientos-stock\naction=sale, orderId, items, couponCode, idempotencyKey
+
+C -> DC : Validar productos, stock y cupón\nRegistrar operación y movimientos
+
+alt Solicitud inválida
+
+  C --> G : 400 Bad Request
+
+  G -> P : PATCH pedido rejected
+
+  G --> F : 400 Bad Request
+
+else Stock/cupón/conflicto de idempotencia
+
+  C --> G : 409 Conflict
+
+  G -> P : PATCH pedido rejected
+
+  G --> F : 409 Conflict
+
+else Error interno Catálogo
+
+  C --> G : 500 Internal Server Error
+
+  G -> P : PATCH pedido rejected
+
+  G --> F : 500
+
+else Inventario procesado por primera vez
+
+  C --> G : 201 Created\n{inventory}
+
+  G -> P : PATCH /api/pedidos/:id\nconfirmed + inventory
+
+else Operación de inventario repetida e idéntica
+
+  C --> G : 200 OK\n{inventory}
+
+  G -> P : PATCH /api/pedidos/:id\nconfirmed + inventory
+
+end
+
+alt Confirmación exitosa
+
+  P -> DP : Guardar importes y estado confirmed
+
+  P --> G : 200 OK\n{pedido confirmed}
+
+  G --> F : 201 Created\n{pedido, inventario}
+
+else Falla confirmación después de descontar stock
+
+  G -> C : POST /api/movimientos-stock\naction=return
+
+  C -> DC : Restaurar stock de forma idempotente
+
+  alt Stock restaurado
+
+    G -> P : PATCH /api/pedidos/:id\nrejected
+
+  end
+
+  G --> F : 503 Service Unavailable\ncompensación informada
+
+end
+
+@enduml

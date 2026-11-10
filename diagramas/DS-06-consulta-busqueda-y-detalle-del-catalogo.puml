@@ -1,0 +1,63 @@
+@startuml
+
+title DS-06 - Consulta, búsqueda y detalle del catálogo
+
+autonumber
+
+actor Visitante
+
+participant Frontend
+
+participant "API Gateway" as G
+
+participant "API Catálogo" as C
+
+database PostgreSQL as DB
+
+Visitante -> Frontend : Abre catálogo o aplica filtros
+
+Frontend -> G : GET /api/productos?nombre=&categoria=&page=&limit=
+
+G -> C : GET /api/productos + query params
+
+C -> DB : SELECT productos activos + filtros + paginación
+
+DB --> C : Productos + total
+
+C --> G : 200 OK\n{items,pagination}
+
+G --> Frontend : 200 OK
+
+opt Selecciona un producto
+
+  Frontend -> G : GET /api/productos/:id
+
+  G -> C : GET /api/productos/:id
+
+  alt Encontrado y activo
+
+    C --> G : 200 OK\n{producto}
+
+    G --> Frontend : 200 OK
+
+  else No encontrado
+
+    C --> G : 404 Not Found
+
+    G --> Frontend : 404 Not Found
+
+  end
+
+end
+
+alt Error interno Catálogo
+
+  C --> G : 500 Internal Server Error
+
+else Catálogo no disponible
+
+  G --> Frontend : 503 Service Unavailable
+
+end
+
+@enduml

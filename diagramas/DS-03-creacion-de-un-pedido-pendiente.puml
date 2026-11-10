@@ -1,0 +1,77 @@
+@startuml
+
+title DS-03 - Creación de pedido pendiente
+
+autonumber
+
+actor Cliente
+
+participant Frontend
+
+participant "API Gateway" as G
+
+participant "API Pedidos" as P
+
+database "MySQL (Aiven)" as DB
+
+Cliente -> Frontend : Confirma checkout
+
+Frontend -> G : POST /api/pedidos\nBearer JWT + Idempotency-Key\nitems, direccionEntrega, couponCode
+
+alt JWT inválido
+
+  G --> Frontend : 401 Unauthorized
+
+else Carrito vacío
+
+  G --> Frontend : 400 Bad Request
+
+else Usuario autenticado
+
+  G -> P : POST /api/pedidos\nx-service-token + identidad + Idempotency-Key
+
+  alt Solicitud inválida
+
+    P --> G : 400 Bad Request
+
+    G --> Frontend : 400 Bad Request
+
+  else Intento nuevo
+
+    P -> DB : INSERT order pending + items
+
+    P --> G : 201 Created\n{pedido pending}
+
+  else Intento repetido idéntico
+
+    P --> G : 200 OK\n{pedido existente}
+
+  else Misma clave con otro contenido
+
+    P --> G : 409 Conflict
+
+    G --> Frontend : 409 Conflict
+
+  else Error MySQL
+
+    P --> G : 500 Internal Server Error
+
+    G --> Frontend : 500
+
+  else Pedidos no disponible / timeout
+
+    G --> Frontend : 503 Service Unavailable\n{uncertain:true, attemptId}
+
+  end
+
+end
+
+note over G
+
+Si se obtiene un pedido pendiente,
+
+continúa DS-04.
+
+end note
+
+@enduml

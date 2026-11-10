@@ -1,0 +1,61 @@
+@startuml
+
+title DS-01 - Inicio de sesión
+
+autonumber
+
+actor Usuario
+
+participant Frontend
+
+participant "API Gateway" as G
+
+participant "API Usuarios" as U
+
+database "MongoDB Atlas" as DB
+
+Usuario -> Frontend : Ingresa email y contraseña
+
+Frontend -> G : POST /api/sesiones\n{email, password}
+
+G -> U : POST /api/sesiones\n{email, password}
+
+alt Datos faltantes o inválidos
+
+  U --> G : 400 Bad Request
+
+  G --> Frontend : 400 Bad Request
+
+else Credenciales incorrectas
+
+  U -> DB : Buscar usuario por email
+
+  DB --> U : Usuario o null
+
+  U -> U : Verificar bcrypt
+
+  U --> G : 401 Unauthorized
+
+  G --> Frontend : 401 Unauthorized
+
+else Credenciales correctas
+
+  U -> U : Generar JWT (2 h)
+
+  U --> G : 201 Created\n{token, user}
+
+  G --> Frontend : 201 Created\n{token, user}
+
+else Error interno de Usuarios
+
+  U --> G : 500 Internal Server Error
+
+  G --> Frontend : 500 Internal Server Error
+
+else Usuarios no disponible
+
+  G --> Frontend : 503 Service Unavailable
+
+end
+
+@enduml

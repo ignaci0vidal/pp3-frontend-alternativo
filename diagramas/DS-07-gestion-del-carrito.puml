@@ -1,0 +1,85 @@
+@startuml
+
+title DS-07 - Gestión del carrito
+
+autonumber
+
+actor Cliente
+
+participant Frontend
+
+participant "API Gateway" as G
+
+participant "API Usuarios" as U
+
+database "MongoDB Atlas" as DB
+
+Cliente -> Frontend : Abre carrito
+
+Frontend -> G : GET /api/usuarios/me/carrito\nBearer JWT
+
+alt JWT inválido
+
+  G --> Frontend : 401 Unauthorized
+
+else JWT válido
+
+  G -> U : GET /api/usuarios/me/carrito\nBearer JWT
+
+  alt Usuario no encontrado
+
+    U --> G : 404 Not Found
+
+  else OK
+
+    U -> DB : Consultar carrito
+
+    U --> G : 200 OK\n{carrito}
+
+    G --> Frontend : 200 OK
+
+  end
+
+end
+
+Cliente -> Frontend : Agrega/modifica/quita
+
+Frontend -> G : PUT /api/usuarios/me/carrito\n{carrito:[...]}
+
+G -> U : PUT /api/usuarios/me/carrito
+
+alt Carrito inválido
+
+  U --> G : 400 Bad Request
+
+  G --> Frontend : 400 Bad Request
+
+else JWT inválido
+
+  U --> G : 401 Unauthorized
+
+  G --> Frontend : 401 Unauthorized
+
+else Usuario no encontrado
+
+  U --> G : 404 Not Found
+
+  G --> Frontend : 404 Not Found
+
+else Guardado correcto
+
+  U -> DB : Actualizar carrito
+
+  U --> G : 200 OK\n{carrito}
+
+  G --> Frontend : 200 OK
+
+else Error interno / servicio no disponible
+
+  U --> G : 500 Internal Server Error
+
+  G --> Frontend : 500 o 503
+
+end
+
+@enduml

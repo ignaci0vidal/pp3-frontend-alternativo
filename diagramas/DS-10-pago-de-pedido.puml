@@ -1,0 +1,63 @@
+@startuml
+
+title DS-10 - Pago de pedido
+
+autonumber
+
+actor Cliente
+
+participant Frontend
+
+participant "API Gateway" as G
+
+participant "API Pedidos" as P
+
+database "MySQL (Aiven)" as DB
+
+Cliente -> Frontend : Elige método y confirma pago
+
+Frontend -> G : POST /api/pedidos/:id/pagar\n{metodo, resultadoSimulado}
+
+G -> P : POST /api/pedidos/:id/pagar\nx-service-token + identidad
+
+alt Rol no cliente
+
+  P --> G : 403 Forbidden
+
+else Pedido inexistente/ajeno
+
+  P --> G : 404 Not Found
+
+else Datos de pago inválidos
+
+  P --> G : 400 Bad Request
+
+else Pedido no está confirmed
+
+  P --> G : 409 Conflict
+
+else Pago rechazado simulado
+
+  P -> DB : INSERT payment rejected
+
+  P --> G : 200 OK\npedido continúa pendiente de pago
+
+  G --> Frontend : 200 OK
+
+else Pago aprobado
+
+  P -> DB : INSERT payment approved + receipt\nUPDATE order paid
+
+  P --> G : 200 OK\n{pago, comprobante}
+
+  G --> Frontend : 200 OK
+
+else Error interno / servicio no disponible
+
+  P --> G : 500 Internal Server Error
+
+  G --> Frontend : 500 o 503
+
+end
+
+@enduml

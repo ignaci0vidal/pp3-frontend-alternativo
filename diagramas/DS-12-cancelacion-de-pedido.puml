@@ -1,0 +1,83 @@
+@startuml
+
+title DS-12 - Cancelación de pedido
+
+autonumber
+
+actor Cliente
+
+participant Frontend
+
+participant "API Gateway" as G
+
+participant "API Pedidos" as P
+
+participant "API Catálogo" as C
+
+database "MySQL (Aiven)" as DP
+
+database PostgreSQL as DC
+
+Cliente -> Frontend : Cancela pedido
+
+Frontend -> G : PATCH /api/pedidos/:id\n{estado:"cancelled"} + Bearer JWT
+
+alt Estado solicitado distinto de cancelled
+
+  G --> Frontend : 400 Bad Request
+
+else Solicitud válida
+
+  G -> P : GET /api/pedidos/:id + identidad
+
+  alt Pedido inexistente/ajeno
+
+    P --> G : 404 Not Found
+
+    G --> Frontend : 404 Not Found
+
+  else Pedido válido
+
+    G -> P : PATCH /api/pedidos/:id\n{estado:"cancelling"}
+
+    alt Transición inválida
+
+      P --> G : 409 Conflict
+
+      G --> Frontend : 409 Conflict
+
+    else cancelling registrado
+
+      P -> DP : UPDATE status=cancelling
+
+      G -> C : POST /api/movimientos-stock\naction=return
+
+      alt Devolución inválida/conflictiva
+
+        C --> G : 400/409
+
+        G --> Frontend : mismo estado
+
+      else Stock restaurado
+
+        C -> DC : Restaurar stock
+
+        C --> G : 200/201
+
+        G -> P : PATCH /api/pedidos/:id\n{estado:"cancelled"}
+
+        P -> DP : UPDATE status=cancelled
+
+        P --> G : 200 OK
+
+        G --> Frontend : 200 OK\n{pedido,inventario}
+
+      end
+
+    end
+
+  end
+
+end
+
+@enduml
