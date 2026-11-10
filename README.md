@@ -118,12 +118,18 @@ flowchart TB
 
 El Gateway integra los servicios de **Usuarios**, **Catálogo** y **Pedidos**. El frontend consume sus rutas públicas a través de ese punto de entrada. Las funciones del diagrama representan el código de la interfaz; su disponibilidad completa depende de las rutas y la configuración del backend.
 
+### Diagramas de secuencia UML
+
+La carpeta [`diagramas/`](diagramas) contiene 12 diagramas PlantUML (`.puml`) que describen los flujos de cuenta, catálogo, carrito y compras. Se pueden visualizar con cualquier visor compatible con PlantUML. Son diagramas de referencia del contrato esperado; no certifican la disponibilidad ni el comportamiento actual de los servicios desplegados.
+
 ## Estructura del repositorio
 
 ```text
 pp3-frontend-alternativo/
 ├── css/
 │   └── styles.css
+├── diagramas/
+│   └── DS-01 a DS-12 (.puml)
 ├── docs/
 │   ├── auditoria-integracion-2026-11-07.md
 │   ├── gateway-contract.md
